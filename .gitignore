@@ -35,3 +35,4 @@
 /ccProject/x64/Debug
 *.pdb
 /.vs
+/ccProject/output/output.bmp

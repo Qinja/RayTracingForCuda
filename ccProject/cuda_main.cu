@@ -16,8 +16,8 @@ using namespace std;
 #pragma region vec3
 struct vec3
 {
-	__device__ inline vec3() { }
-	__device__ inline vec3(float e0, float e1, float e2) { x = e0; y = e1; z = e2; }
+	__host__ __device__ inline vec3() { }
+	__host__ __device__ inline vec3(float e0, float e1, float e2) { x = e0; y = e1; z = e2; }
 	float x;
 	float y;
 	float z;
@@ -73,8 +73,8 @@ public:
 #pragma region sphere
 class sphere : public hitable {
 public:
-	__device__ sphere() {}
-	__device__ sphere(vec3 cen, float r) :center(cen), radius(r) {}
+	__host__ __device__ sphere() {}
+	__host__ __device__ sphere(vec3 cen, float r) :center(cen), radius(r) {}
 	__device__ virtual bool hit(const ray& r, float t_min, float t_max, hit_record& rec)const;
 	vec3 center;
 	float radius;
@@ -136,8 +136,9 @@ __device__ bool hitable_list::hit(const ray& r, float t_min, float t_max, hit_re
 	}
 	return hit_anything;
 }
-
 #pragma endregion
+
+#pragma region __DeviceCode__
 
 __device__ vec3 get_color(const ray& r, hitable *world)
 {
@@ -153,7 +154,8 @@ __device__ vec3 get_color(const ray& r, hitable *world)
 		return (1 - t)*vec3(1, 1, 1) + t * vec3(0.5, 0.7, 1);
 	}
 }
-__global__ void kernel(unsigned char *ptr)
+
+__global__ void kernel(unsigned char *ptr, hitable_list **hl_ptr)
 {
 	// map from threadIdx/BlockIdx to pixel position
 	int x = threadIdx.x + blockIdx.x * blockDim.x;	//横坐标
@@ -167,37 +169,36 @@ __global__ void kernel(unsigned char *ptr)
 	vec3 origin(0, 0, 0);
 	float u = float(x) / DIMX;
 	float v = float(y) / DIMY;
-	hitable * list[2];
 
-
-
-	sphere b(vec3(0, -100.5, -1), 100);
-	list[1] = &b;
-
-
-
-
-	sphere a(vec3(0, 0, -1), 0.5);
-	list[0] = &a;
-
-	//hitable * list[2];
-	//list[0] = new sphere(vec3(0, 0, -1), 0.5);
-	//list[1] = new sphere(vec3(0, -100.5, -1), 100);
-
-
-
-	//hitable * world = new hitable_list(list, 2);
-	hitable_list world(list, 2);
 	ray r(origin, bottom_left + u * horizontal + v * vertial);
 	//vec3 color((float)x / DIMX, (float)y / DIMY, 0.2);		//默认颜色
-	vec3 color = get_color(r, &world);
-
+	//vec3 color = vec3((hl_ptr->list_size)/3,0,0);
+	vec3 color = get_color(r, *hl_ptr);
 
 	ptr[offset * 4 + 0] = (int)(color.x * 255);
 	ptr[offset * 4 + 1] = (int)(color.y * 255);
 	ptr[offset * 4 + 2] = (int)(color.z * 255);
 	ptr[offset * 4 + 3] = 255;
 }
+
+__global__ void AllocateOnDevice(hitable **h, hitable_list **list)
+{
+	*h = new sphere[2];
+	h[0] = new sphere(vec3(0, 0, -1), 0.5);
+	h[1] = new sphere(vec3(0, -100.5, -1), 100);
+	*list = new hitable_list(h, 2);
+}
+
+// 释放之前在device上申请Derived的实例
+__global__ void DeleteOnDevice(hitable **h, hitable_list **list)
+{
+	delete[](*h);
+	h = nullptr;
+	delete[](*list);
+	list = nullptr;
+}
+
+#pragma endregion
 
 int main(void)
 {
@@ -207,35 +208,23 @@ int main(void)
 	cudaErrorYoN(cudaEventCreate(&stop), 4);
 	cudaErrorYoN(cudaEventRecord(start, 0), 4);
 	CPUBitmap bitmap(DIMX, DIMY);
+
 	unsigned char   *dev_bitmap;
 	// 在GPU上分配内存以计算输出位图
 	cudaErrorYoN(cudaMalloc((void**)&dev_bitmap, bitmap.image_size()), 1);
 
+	dim3 grids(DIMX / 16, DIMY / 16);
+	dim3 threads(16, 16);
+	hitable **h_ptr = nullptr;
+	hitable_list **hl_ptr = nullptr;
+	cudaErrorYoN(cudaMalloc((void **)&h_ptr, sizeof(hitable **)), 1);
+	cudaErrorYoN(cudaMalloc((void **)&hl_ptr, sizeof(hitable_list **)), 1);
+	AllocateOnDevice <<<1,1>>> (h_ptr, hl_ptr);       // 在device上申请Derived类的实例
+	kernel <<<grids, threads >>>(dev_bitmap, hl_ptr);
+	cudaDeviceSynchronize();
+	cudaGetLastError();
+	DeleteOnDevice << <1, 1 >> >(h_ptr, hl_ptr);
 
-
-	//// 为 Sphere数据集分配内存
-	//cudaErrorYoN(cudaMalloc((void**)&s, sizeof(Sphere) * SPHERES), 1);
-	//// 分配临时内存，在CPU上对其初始化，并复制到GPU内存上，然后释放内存
-	//Sphere *temp_s = (Sphere*)malloc(sizeof(Sphere) * SPHERES);
-	//// 为SPHERES个圆分配位置，颜色，半径信息
-	//for (int i = 0; i<SPHERES; i++)
-	//{
-	//	temp_s[i].r = rnd(1.0f);
-	//	temp_s[i].g = rnd(1.0f);
-	//	temp_s[i].b = rnd(1.0f);
-	//	temp_s[i].x = rnd(1000.0f) - 500;
-	//	temp_s[i].y = rnd(1000.0f) - 500;
-	//	temp_s[i].z = rnd(1000.0f) - 500;
-	//	temp_s[i].radius = rnd(100.0f) + 20;
-	//}
-	//cudaErrorYoN(cudaMemcpy(s, temp_s, sizeof(Sphere) * SPHERES, cudaMemcpyHostToDevice), 2);
-	//free(temp_s);
-
-
-	// generate a bitmap
-	dim3    grids(DIMX / 16, DIMY / 16);
-	dim3    threads(16, 16);
-	kernel <<<grids, threads >>>(dev_bitmap);
 	// 将位图从GPU上复制到主机上
 	cudaErrorYoN(cudaMemcpy(bitmap.get_ptr(), dev_bitmap, bitmap.image_size(), cudaMemcpyDeviceToHost), 2);
 	// 记录结束时间
@@ -253,5 +242,5 @@ int main(void)
 	//cudaErrorYoN(cudaFree(s), 3);
 	bitmap.displayimage();
 	// 显示位图
-	bitmap.savetobmp("output/output.bmp");
+	bitmap.savetobmp("output/5.hitableList.bmp");
 }
