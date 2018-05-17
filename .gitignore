@@ -30,3 +30,7 @@
 *.exe
 *.out
 *.app
+/x64/Debug
+/.vs/ccProject/v15
+/ccProject/x64/Debug
+*.pdb
