@@ -7,18 +7,11 @@
 #include "cudaErrorYoN.h"
 
 using namespace std;
+#define SEED_BASE 12345657890
 #define DIMX 1600
 #define DIMY 800
-
-#pragma region mathutil
-__device__ double drand48(void)
-{
-	static unsigned long long seed = 44871246230152;
-	seed = (0x5DEECE66DLL * seed + 0xB16) & 0xFFFFFFFFFFFFLL;
-	unsigned int x = seed >> 16;
-	return  ((double)x / (double)0x100000000LL);
-}
-#pragma endregion
+#define SPP 25
+#define MAX_DEPTH 50
 
 #pragma region vec3
 struct vec3
@@ -48,6 +41,33 @@ __device__ inline vec3 cross(const vec3 &v1, const vec3 &v2) {
 		(v1.z * v2.x - v1.x * v2.z),
 		(v1.x * v2.y - v1.y * v2.x));
 }
+#pragma endregion
+
+#pragma region mathutil
+struct random
+{
+	__device__ random(int seed)
+	{
+		threadseed = SEED_BASE + seed* seed;
+	}
+	__device__ double drand48()
+	{
+		threadseed = (0x5DEECE66DLL * threadseed + 0xB16) & 0xFFFFFFFFFFFFLL;
+		unsigned int x = threadseed >> 16;
+		return  ((double)x / (double)0x100000000LL);
+	}
+	__device__ vec3 random_in_unit_sphere()
+	{
+		vec3 p;
+		do
+		{
+			p = 2.0 * vec3(drand48(), drand48(), drand48()) - vec3(1, 1, 1);
+		} while (dot(p, p) >= 1.0);
+		return p;
+	}
+	unsigned long long threadseed;
+};
+
 #pragma endregion
 
 #pragma region ray
@@ -168,19 +188,28 @@ __device__ bool hitable_list::hit(const ray& r, float t_min, float t_max, hit_re
 #pragma endregion
 
 #pragma region __DeviceCode__
-__device__ vec3 get_color(const ray& r, hitable *world)
+__device__ vec3 get_color(const ray& r, hitable *world,unsigned int maxDepth, random rnd)
 {
-	hit_record rec;
-	if (world->hit(r, 0.0, FLT_MAX, rec))
+	hit_record tmprec;
+	vec3 tmpc(1, 1, 1);
+	ray tmpr = r;
+	for (int d = 0; d < maxDepth; d++)
 	{
-		return 0.5 * (rec.normal + vec3(1, 1, 1));
+		if (world->hit(tmpr, 0.1, FLT_MAX, tmprec))
+		{
+			tmpc = tmpc * 0.5;
+			vec3 target = tmprec.p + tmprec.normal + rnd.random_in_unit_sphere();
+			tmpr = ray(tmprec.p, target - tmprec.p);
+		}
+		else
+		{
+			vec3 unitdir = tmpr.direction.normalize();
+			float k = 0.5 *(unitdir.y + 1.0);
+			tmpc = tmpc * ((1.0 - k)*vec3(1.0, 1.0, 1.0) + k * vec3(0.4, 0.6, 1.0));
+			break;
+		}
 	}
-	else
-	{
-		vec3 u = r.direction.normalize();
-		float t = 0.5 * (u.y + 1);
-		return (1 - t)*vec3(1, 1, 1) + t * vec3(0.5, 0.7, 1);
-	}
+	return tmpc;
 }
 __global__ void kernel(unsigned char *ptr, hitable_list **hl_ptr, camera **cam, unsigned int spp)
 {
@@ -188,13 +217,14 @@ __global__ void kernel(unsigned char *ptr, hitable_list **hl_ptr, camera **cam, 
 	int x = threadIdx.x + blockIdx.x * blockDim.x;	//横坐标
 	int y = threadIdx.y + blockIdx.y * blockDim.y;	//纵坐标
 	int offset = x + y * blockDim.x * gridDim.x;	//横数第几个点
+	random rnd(offset);
 	vec3 color(0, 0, 0);
 	for (int s = 0; s < spp; s++)
 	{
-		float u = float(x+ drand48()) / DIMX;
-		float v = float(y+ drand48()) / DIMY;
+		float u = float(x+ rnd.drand48()) / DIMX;
+		float v = float(y+ rnd.drand48()) / DIMY;
 		ray r = (*cam)->get_ray(u, v);
-		color += get_color(r, *hl_ptr);
+		color += get_color(r, *hl_ptr, MAX_DEPTH, rnd);
 	}
 	color /= float(spp);
 	//vec3 color((float)x / DIMX, (float)y / DIMY, 0.2);		//默认颜色
@@ -222,7 +252,6 @@ __global__ void DeleteOnDevice(hitable **h, hitable_list **list, camera **cam)
 	delete[](*cam);
 	cam = nullptr;
 }
-
 #pragma endregion
 
 int main(void)
@@ -243,11 +272,12 @@ int main(void)
 	hitable **h_ptr = nullptr;
 	hitable_list **hl_ptr = nullptr;
 	camera **cam = nullptr;
-	unsigned int spp = 10;
+	unsigned int spp = SPP;
 	cudaErrorYoN(cudaMalloc((void **)&h_ptr, sizeof(hitable **)), 1);
 	cudaErrorYoN(cudaMalloc((void **)&hl_ptr, sizeof(hitable_list **)), 1);
 	cudaErrorYoN(cudaMalloc((void **)&cam, sizeof(camera **)), 1);
-	AllocateOnDevice <<<1,1>>> (h_ptr, hl_ptr, cam);       // 在device上申请Derived类的实例
+
+	AllocateOnDevice <<<1,1>>> (h_ptr, hl_ptr, cam);
 	kernel <<<grids, threads >>>(dev_bitmap, hl_ptr, cam,spp);
 	cudaDeviceSynchronize();
 	cudaGetLastError();
@@ -270,5 +300,5 @@ int main(void)
 	//cudaErrorYoN(cudaFree(s), 3);
 	bitmap.displayimage();
 	// 显示位图
-	bitmap.savetobmp("output/6.AA.bmp");
+	bitmap.savetobmp("output/output.bmp");
 }

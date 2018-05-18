@@ -51,3 +51,9 @@
 	超采样抗锯齿。超采样串行。
 
 ![图6](/ccProject/output/6.AA.bmp)
+
+7. 图七，实现diffuse材质
+
+	实现diffuse材质，用递归来使颜色下降。
+
+![图7](/ccProject/output/7.diffuse.bmp)
