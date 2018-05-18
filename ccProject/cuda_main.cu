@@ -9,15 +9,22 @@
 using namespace std;
 #define DIMX 1600
 #define DIMY 800
-//#define rnd( x ) (x * rand() / RAND_MAX)
-//#define INF     2e10f
-//#define SPHERES 30
+
+#pragma region mathutil
+__device__ double drand48(void)
+{
+	static unsigned long long seed = 44871246230152;
+	seed = (0x5DEECE66DLL * seed + 0xB16) & 0xFFFFFFFFFFFFLL;
+	unsigned int x = seed >> 16;
+	return  ((double)x / (double)0x100000000LL);
+}
+#pragma endregion
 
 #pragma region vec3
 struct vec3
 {
-	__host__ __device__ inline vec3() { }
-	__host__ __device__ inline vec3(float e0, float e1, float e2) { x = e0; y = e1; z = e2; }
+	__device__ inline vec3() { }
+	__device__ inline vec3(float e0, float e1, float e2) { x = e0; y = e1; z = e2; }
 	float x;
 	float y;
 	float z;
@@ -48,9 +55,31 @@ struct ray
 {
 	__device__ inline ray() { }
 	__device__ inline ray(const vec3& a, const vec3& b) :origin(a), direction(b) {}
-	__device__ vec3 get_point_by_t(float t)const { return origin + t * direction; }
+	__device__ inline vec3 get_point_by_t(float t)const { return origin + t * direction; }
 	vec3 origin;
 	vec3 direction;
+};
+#pragma endregion
+
+#pragma region camera
+struct camera {
+public:
+	
+	__device__ inline camera()
+	{
+		left_bottom = vec3(-2, -1, -1);
+		horizontal = vec3(4, 0, 0);
+		vertical = vec3(0, 2, 0);
+		origin = vec3(0, 0, 0);
+	}
+	__device__ inline ray get_ray(float u, float v)
+	{
+		return ray(origin, left_bottom + u * horizontal + v * vertical);
+	}
+	vec3 origin;
+	vec3 left_bottom;
+	vec3 horizontal;
+	vec3 vertical;
 };
 #pragma endregion
 
@@ -73,8 +102,8 @@ public:
 #pragma region sphere
 class sphere : public hitable {
 public:
-	__host__ __device__ sphere() {}
-	__host__ __device__ sphere(vec3 cen, float r) :center(cen), radius(r) {}
+	__device__ sphere() {}
+	__device__ sphere(vec3 cen, float r) :center(cen), radius(r) {}
 	__device__ virtual bool hit(const ray& r, float t_min, float t_max, hit_record& rec)const;
 	vec3 center;
 	float radius;
@@ -139,7 +168,6 @@ __device__ bool hitable_list::hit(const ray& r, float t_min, float t_max, hit_re
 #pragma endregion
 
 #pragma region __DeviceCode__
-
 __device__ vec3 get_color(const ray& r, hitable *world)
 {
 	hit_record rec;
@@ -154,48 +182,45 @@ __device__ vec3 get_color(const ray& r, hitable *world)
 		return (1 - t)*vec3(1, 1, 1) + t * vec3(0.5, 0.7, 1);
 	}
 }
-
-__global__ void kernel(unsigned char *ptr, hitable_list **hl_ptr)
+__global__ void kernel(unsigned char *ptr, hitable_list **hl_ptr, camera **cam, unsigned int spp)
 {
 	// map from threadIdx/BlockIdx to pixel position
 	int x = threadIdx.x + blockIdx.x * blockDim.x;	//横坐标
 	int y = threadIdx.y + blockIdx.y * blockDim.y;	//纵坐标
 	int offset = x + y * blockDim.x * gridDim.x;	//横数第几个点
-
-
-	vec3 bottom_left(-2, -1, -1);
-	vec3 horizontal(4, 0, 0);
-	vec3 vertial(0, 2, 0);
-	vec3 origin(0, 0, 0);
-	float u = float(x) / DIMX;
-	float v = float(y) / DIMY;
-
-	ray r(origin, bottom_left + u * horizontal + v * vertial);
+	vec3 color(0, 0, 0);
+	for (int s = 0; s < spp; s++)
+	{
+		float u = float(x+ drand48()) / DIMX;
+		float v = float(y+ drand48()) / DIMY;
+		ray r = (*cam)->get_ray(u, v);
+		color += get_color(r, *hl_ptr);
+	}
+	color /= float(spp);
 	//vec3 color((float)x / DIMX, (float)y / DIMY, 0.2);		//默认颜色
-	//vec3 color = vec3((hl_ptr->list_size)/3,0,0);
-	vec3 color = get_color(r, *hl_ptr);
-
 	ptr[offset * 4 + 0] = (int)(color.x * 255);
 	ptr[offset * 4 + 1] = (int)(color.y * 255);
 	ptr[offset * 4 + 2] = (int)(color.z * 255);
 	ptr[offset * 4 + 3] = 255;
 }
-
-__global__ void AllocateOnDevice(hitable **h, hitable_list **list)
+//分配内存
+__global__ void AllocateOnDevice(hitable **h, hitable_list **list, camera **cam)
 {
 	*h = new sphere[2];
 	h[0] = new sphere(vec3(0, 0, -1), 0.5);
 	h[1] = new sphere(vec3(0, -100.5, -1), 100);
 	*list = new hitable_list(h, 2);
+	*cam = new camera();
 }
-
-// 释放之前在device上申请Derived的实例
-__global__ void DeleteOnDevice(hitable **h, hitable_list **list)
+// 释放内存
+__global__ void DeleteOnDevice(hitable **h, hitable_list **list, camera **cam)
 {
 	delete[](*h);
 	h = nullptr;
 	delete[](*list);
 	list = nullptr;
+	delete[](*cam);
+	cam = nullptr;
 }
 
 #pragma endregion
@@ -217,13 +242,16 @@ int main(void)
 	dim3 threads(16, 16);
 	hitable **h_ptr = nullptr;
 	hitable_list **hl_ptr = nullptr;
+	camera **cam = nullptr;
+	unsigned int spp = 10;
 	cudaErrorYoN(cudaMalloc((void **)&h_ptr, sizeof(hitable **)), 1);
 	cudaErrorYoN(cudaMalloc((void **)&hl_ptr, sizeof(hitable_list **)), 1);
-	AllocateOnDevice <<<1,1>>> (h_ptr, hl_ptr);       // 在device上申请Derived类的实例
-	kernel <<<grids, threads >>>(dev_bitmap, hl_ptr);
+	cudaErrorYoN(cudaMalloc((void **)&cam, sizeof(camera **)), 1);
+	AllocateOnDevice <<<1,1>>> (h_ptr, hl_ptr, cam);       // 在device上申请Derived类的实例
+	kernel <<<grids, threads >>>(dev_bitmap, hl_ptr, cam,spp);
 	cudaDeviceSynchronize();
 	cudaGetLastError();
-	DeleteOnDevice << <1, 1 >> >(h_ptr, hl_ptr);
+	DeleteOnDevice << <1, 1 >> >(h_ptr, hl_ptr, cam);
 
 	// 将位图从GPU上复制到主机上
 	cudaErrorYoN(cudaMemcpy(bitmap.get_ptr(), dev_bitmap, bitmap.image_size(), cudaMemcpyDeviceToHost), 2);
@@ -242,5 +270,5 @@ int main(void)
 	//cudaErrorYoN(cudaFree(s), 3);
 	bitmap.displayimage();
 	// 显示位图
-	bitmap.savetobmp("output/5.hitableList.bmp");
+	bitmap.savetobmp("output/6.AA.bmp");
 }

@@ -43,4 +43,11 @@
 	所以这里是一个比较大的坑。不好调试也不好理解。
 	参考资料：[CSDN:Pxy](https://blog.csdn.net/u010445006/article/details/78219033)
 
-![图4](/ccProject/output/5.hitableList.bmp)
+![图5](/ccProject/output/5.hitableList.bmp)
+
+6. 图六，实现超采样，分离摄像机
+
+	添加camera。
+	超采样抗锯齿。超采样串行。
+
+![图6](/ccProject/output/6.AA.bmp)
