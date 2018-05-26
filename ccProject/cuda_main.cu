@@ -1,10 +1,7 @@
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
 #include <cuda.h>
-#include <iostream>
-#include <Windows.h>
-#include "cpu_bitmap.h"
-#include "cudaErrorYoN.h"
+#include "bmp.h"
 
 using namespace std;
 #define SEED_BASE 12345657890
@@ -12,6 +9,42 @@ using namespace std;
 #define DIMY 800
 #define SPP 25
 #define MAX_DEPTH 50
+
+#pragma region cudaCheck
+static unsigned int cudaCallCount = 0;
+__host__ void cudaCheck(cudaError_t cudaStatus)
+{
+	cudaCallCount++;
+	// 判断cuda函数是否错误
+	if (cudaStatus != cudaSuccess)
+	{
+		cout << "cuda failed! CallCount: [" << cudaCallCount << "]Error Code: [" << cudaStatus << "]" << endl;
+		system("pause");
+		exit(1);
+	}
+}
+#pragma endregion
+
+#pragma region host_CPUBitmap
+struct CPUBitmap {
+	unsigned char    *pixels;
+	int     x, y;
+	__host__ CPUBitmap(int width, int height) {
+		pixels = new unsigned char[width * height * 4];
+		x = width;
+		y = height;
+	}
+	__host__ ~CPUBitmap() {
+		delete[] pixels;
+	}
+	__host__ unsigned char* get_ptr(void) const { return pixels; }
+	__host__ long image_size(void) const { return x * y * 4; }
+	__host__ void savetobmp(const char* filename)
+	{
+		WriteBmp(this->x, this->y, this->pixels, 4, filename);
+	}
+};
+#pragma endregion
 
 #pragma region vec3
 struct vec3
@@ -219,6 +252,7 @@ __global__ void kernel(unsigned char *ptr, hitable_list **hl_ptr, camera **cam, 
 	int offset = x + y * blockDim.x * gridDim.x;	//横数第几个点
 	random rnd(offset);
 	vec3 color(0, 0, 0);
+	//printf("N");
 	for (int s = 0; s < spp; s++)
 	{
 		float u = float(x+ rnd.drand48()) / DIMX;
@@ -236,10 +270,10 @@ __global__ void kernel(unsigned char *ptr, hitable_list **hl_ptr, camera **cam, 
 //分配内存
 __global__ void AllocateOnDevice(hitable **h, hitable_list **list, camera **cam)
 {
-	*h = new sphere[2];
+	*h = new sphere[10];
 	h[0] = new sphere(vec3(0, 0, -1), 0.5);
-	h[1] = new sphere(vec3(0, -100.5, -1), 100);
-	*list = new hitable_list(h, 2);
+	//h[1] = &(sphere(vec3(0, -100.5, -1), 100));
+	*list = new hitable_list(h, 1);
 	*cam = new camera();
 }
 // 释放内存
@@ -257,15 +291,15 @@ __global__ void DeleteOnDevice(hitable **h, hitable_list **list, camera **cam)
 int main(void)
 {
 	// 记录起始时间
-	cudaEvent_t     start, stop;
-	cudaErrorYoN(cudaEventCreate(&start), 4);
-	cudaErrorYoN(cudaEventCreate(&stop), 4);
-	cudaErrorYoN(cudaEventRecord(start, 0), 4);
+	cudaEvent_t start, stop;
+	cudaCheck(cudaEventCreate(&start));
+	cudaCheck(cudaEventCreate(&stop));
+	cudaCheck(cudaEventRecord(start, 0));
 	CPUBitmap bitmap(DIMX, DIMY);
 
 	unsigned char   *dev_bitmap;
 	// 在GPU上分配内存以计算输出位图
-	cudaErrorYoN(cudaMalloc((void**)&dev_bitmap, bitmap.image_size()), 1);
+	cudaCheck(cudaMalloc((void**)&dev_bitmap, bitmap.image_size()));
 
 	dim3 grids(DIMX / 16, DIMY / 16);
 	dim3 threads(16, 16);
@@ -273,32 +307,37 @@ int main(void)
 	hitable_list **hl_ptr = nullptr;
 	camera **cam = nullptr;
 	unsigned int spp = SPP;
-	cudaErrorYoN(cudaMalloc((void **)&h_ptr, sizeof(hitable **)), 1);
-	cudaErrorYoN(cudaMalloc((void **)&hl_ptr, sizeof(hitable_list **)), 1);
-	cudaErrorYoN(cudaMalloc((void **)&cam, sizeof(camera **)), 1);
+	cudaCheck(cudaMalloc((void **)&h_ptr, sizeof(hitable **)));
+	cudaCheck(cudaMalloc((void **)&hl_ptr, sizeof(hitable_list **)));
+	cudaCheck(cudaMalloc((void **)&cam, sizeof(camera **)));
 
 	AllocateOnDevice <<<1,1>>> (h_ptr, hl_ptr, cam);
+
 	kernel <<<grids, threads >>>(dev_bitmap, hl_ptr, cam,spp);
-	cudaDeviceSynchronize();
-	cudaGetLastError();
+
+	cudaCheck(cudaDeviceSynchronize());
+	cudaCheck(cudaGetLastError());
+
 	DeleteOnDevice << <1, 1 >> >(h_ptr, hl_ptr, cam);
 
 	// 将位图从GPU上复制到主机上
-	cudaErrorYoN(cudaMemcpy(bitmap.get_ptr(), dev_bitmap, bitmap.image_size(), cudaMemcpyDeviceToHost), 2);
+	cudaCheck(cudaMemcpy(bitmap.get_ptr(), dev_bitmap, bitmap.image_size(), cudaMemcpyDeviceToHost));
+
 	// 记录结束时间
-	cudaErrorYoN(cudaEventRecord(stop, 0), 4);
-	cudaErrorYoN(cudaEventSynchronize(stop), 4);
+	cudaCheck(cudaEventRecord(stop, 0));
+	cudaCheck(cudaEventSynchronize(stop));
 	// 显示运行时间
-	float   elapsedTime;
-	cudaErrorYoN(cudaEventElapsedTime(&elapsedTime, start, stop), 4); // 计算两个事件之间的时间
+	float elapsedTime;
+	cudaCheck(cudaEventElapsedTime(&elapsedTime, start, stop)); // 计算两个事件之间的时间
 	printf("Time to generate:  %3.1f ms\n", elapsedTime);
 	// 销毁事件
-	cudaErrorYoN(cudaEventDestroy(start), 4);
-	cudaErrorYoN(cudaEventDestroy(stop), 4);
+	cudaCheck(cudaEventDestroy(start));
+	cudaCheck(cudaEventDestroy(stop));
 	// 释放内存
-	cudaErrorYoN(cudaFree(dev_bitmap), 3);
-	//cudaErrorYoN(cudaFree(s), 3);
-	bitmap.displayimage();
+	cudaCheck(cudaFree(dev_bitmap));
 	// 显示位图
 	bitmap.savetobmp("output/output.bmp");
+	system("output\\output.bmp");
+	system("pause");
+
 }

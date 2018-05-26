@@ -58,6 +58,10 @@
     <Link>
       <AdditionalDependencies>cublas.lib;cuda.lib;cudadevrt.lib;cudart.lib;cudart_static.lib;nvcuvid.lib;OpenCL.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <CudaCompile>
+      <TargetMachinePlatform>64</TargetMachinePlatform>
+      <FastMath>true</FastMath>
+    </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -88,20 +92,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bmp.h" />
-    <ClInclude Include="cpu_bitmap.h" />
-    <ClInclude Include="cudaErrorYoN.h" />
-    <ClInclude Include="glad.h" />
-    <ClInclude Include="glfw3.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="cudaErrorYoN.cpp" />
-    <ClCompile Include="glad.c" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="glfw3.dll" />
-  </ItemGroup>
-  <ItemGroup>
-    <Library Include="glfw3dll.lib" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

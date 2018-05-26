@@ -79,5 +79,4 @@ void WriteBmp(int w, int h,const unsigned char *data,int length, const char * fi
 		fwrite(bits, size, 1, output);
 		fclose(output);
 	}
-
 }

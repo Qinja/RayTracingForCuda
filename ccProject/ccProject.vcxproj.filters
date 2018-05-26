@@ -15,35 +15,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="cpu_bitmap.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="cudaErrorYoN.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="glad.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="glfw3.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="bmp.h">
       <Filter>头文件</Filter>
     </ClInclude>
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="cudaErrorYoN.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="glad.c">
-      <Filter>源文件</Filter>
-    </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="glfw3.dll" />
-  </ItemGroup>
-  <ItemGroup>
-    <Library Include="glfw3dll.lib" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="cuda_main.cu">
