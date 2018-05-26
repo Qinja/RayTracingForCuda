@@ -9,10 +9,10 @@
 
 using namespace std;
 #define SEED_BASE 12345657890
-#define DIMX 1600
-#define DIMY 800
-#define SPP 10
-#define MAX_DEPTH 2
+#define DIMX 32
+#define DIMY 16
+#define SPP 1
+#define MAX_DEPTH 1
 
 #pragma region vec3
 struct vec3
@@ -132,7 +132,6 @@ public:
 
 __device__ bool sphere::hit(const ray& r, float t_min, float t_max, hit_record& rec)const
 {
-	return false;
 	vec3 oc = r.origin - center;
 	float a = dot(r.direction, r.direction);
 	float b = dot(oc, r.direction);
@@ -180,9 +179,9 @@ __device__ bool hitable_list::hit(const ray& r, float t_min, float t_max, hit_re
 	{
 		if (list[i]->hit(r, t_min, cloest_so_far, tmp_rec))
 		{
-		//	hit_anything = true;
-		//	cloest_so_far = tmp_rec.t;
-		//	rec = tmp_rec;
+			hit_anything = true;
+			cloest_so_far = tmp_rec.t;
+			rec = tmp_rec;
 		}
 	}
 	return hit_anything;
