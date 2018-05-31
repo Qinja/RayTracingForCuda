@@ -6,8 +6,8 @@
 #define SEED_BASE 12345657890
 #define DIMX 1600
 #define DIMY 800
-#define SPP 25
-#define MAX_DEPTH 50
+#define SPP 16
+#define MAX_DEPTH 2
 
 #pragma region cudaCheck
 static unsigned int cudaCallCount = 0;
@@ -29,17 +29,17 @@ __host__ void cudaCheck(cudaError_t cudaStatus)
 struct CPUBitmap {
 	unsigned char *pixels;
 	int x, y;
-	__host__ CPUBitmap(int width, int height) {
+	__host__ __device__ CPUBitmap(int width, int height) {
 		pixels = new unsigned char[width * height * 3];
 		x = width;
 		y = height;
 	}
-	__host__ ~CPUBitmap() {
+	__host__ __device__ ~CPUBitmap() {
 		delete[] pixels;
 	}
-	__host__ unsigned char* get_ptr(void) const { return pixels; }
-	__host__ long image_size(void) const { return x * y * 3; }
-	__host__ void savetobmp(const char* filename)
+	__host__ __device__ unsigned char* get_ptr(void) const { return pixels; }
+	__host__ __device__ long image_size(void) const { return x * y * 3; }
+	__host__ __device__ void savetobmp(const char* filename)
 	{
 		WriteBmp(this->x, this->y, this->pixels, 3, filename);
 	}
@@ -115,28 +115,33 @@ struct ray
 #pragma endregion
 
 #pragma region camera
-struct camera {
+class camera {
 public:
-	
 	__device__ inline camera()
 	{
-		left_bottom = vec3(-2, -1, -1);
-		horizontal = vec3(4, 0, 0);
-		vertical = vec3(0, 2, 0);
+		leftbottom = vec3(-2, -1, -1);
+		hori = vec3(4, 0, 0);
+		ver = vec3(0, 2, 0);
 		origin = vec3(0, 0, 0);
 	}
 	__device__ inline ray get_ray (float u, float v)const
 	{
-		return ray(origin, left_bottom + u * horizontal + v * vertical);
+		//vec3 a = origin;		//代码1
+		////vec3 b = vertical;		//代码2
+		//vec3 d = ver;			//代码3
+		//vec3 e = hori;			//代码4
+		//return ray();			//代码5
+		return ray(origin, leftbottom + u * hori + v * ver);		//代码6
 	}
+private:
 	vec3 origin;
-	vec3 left_bottom;
-	vec3 horizontal;
-	vec3 vertical;
+	vec3 leftbottom;
+	vec3 hori;
+	vec3 ver;
 };
 #pragma endregion
 
-#pragma region hittable
+#pragma region hit_record
 struct hit_record
 {
 	float t;
@@ -190,9 +195,9 @@ class hitable_list
 {
 public:
 	__device__ inline hitable_list(){}
-	__device__ inline hitable_list(sphere **l, int n) :list(l), list_size(n) {}
+	__device__ inline hitable_list(sphere *l, int n) :list(l), list_size(n) {}
 	__device__ inline bool hit(const ray& r, float t_min, float t_max, hit_record& rec)const;
-	sphere **list;
+	sphere *list;
 	int list_size;
 };
 __device__ bool hitable_list::hit(const ray& r, float t_min, float t_max, hit_record& rec)const
@@ -202,7 +207,7 @@ __device__ bool hitable_list::hit(const ray& r, float t_min, float t_max, hit_re
 	double cloest_so_far = t_max;
 	for (int i = 0; i < list_size; i++)
 	{
-		if (list[i]->hit(r, t_min, cloest_so_far, tmp_rec))
+		if (list[i].hit(r, t_min, cloest_so_far, tmp_rec))
 		{
 			hit_anything = true;
 			cloest_so_far = tmp_rec.t;
@@ -237,42 +242,55 @@ __device__ vec3 get_color(const ray& r,const hitable_list *world,unsigned int ma
 	}
 	return tmpc;
 }
-__global__ void kernel(unsigned char *img,const hitable_list *hit_list,const camera *cam, unsigned int spp)
+__global__ void kernel(unsigned char *img,const hitable_list *hit_list,const camera *cam)
 {
 	// map from threadIdx/BlockIdx to pixel position
 	int x = threadIdx.x + blockIdx.x * blockDim.x;	//横坐标
 	int y = threadIdx.y + blockIdx.y * blockDim.y;	//纵坐标
-	int offset = x + y * blockDim.x * gridDim.x;	//横数第几个点
+	int z = threadIdx.z + blockIdx.z * blockDim.z;	//深度坐标
+	long offset = x + y * blockDim.x * gridDim.x 
+		+ z * blockDim.x * gridDim.x * blockDim.y * gridDim.y;	//先深度，后纵向，再横向第几个点
 	random rnd(offset);
 	vec3 color(0, 0, 0);
-	//printf("N");
-	for (int s = 0; s < spp; s++)
-	{
-		float u = float(x+ rnd.drand48()) / DIMX;
-		float v = float(y+ rnd.drand48()) / DIMY;
-		ray r = cam->get_ray(u, v);
-		color += get_color(r, hit_list, MAX_DEPTH, rnd);
-	}
-	color /= float(spp);
-	//vec3 color((float)x / DIMX, (float)y / DIMY, 0.2);		//默认颜色
+	float u = float(x + rnd.drand48()) / DIMX;
+	float v = float(y + rnd.drand48()) / DIMY;
+	ray r = cam->get_ray(u, v);
+	color += get_color(r, hit_list, MAX_DEPTH, rnd);
 	img[offset * 3 + 0] = (int)(color.x * 255);
 	img[offset * 3 + 1] = (int)(color.y * 255);
 	img[offset * 3 + 2] = (int)(color.z * 255);
 }
-//分配内存
-__global__ void AllocateOnDevice(sphere **h, hitable_list *hit_list, camera* cam)
+__global__ void mix(unsigned char *img,int spp)
 {
-	*h = new sphere[10];
-	h[0] = new sphere(vec3(0, 0, -1), 0.5);
-	//h[1] = &(sphere(vec3(0, -100.5, -1), 100));
-	*hit_list = hitable_list(h, 1);
+	int x = threadIdx.x + blockIdx.x * blockDim.x;	//横坐标
+	int y = threadIdx.y + blockIdx.y * blockDim.y;	//纵坐标
+	int offset = x + y * blockDim.x * gridDim.x;	//横数第几个点
+	long frame = blockDim.x * gridDim.x * blockDim.y * gridDim.y;
+	for (int i = 1; i < spp; i++)
+	{
+		img[offset * 3 + 0] += img[frame * i + offset * 3 + 0];
+		img[offset * 3 + 1] += img[frame * i + offset * 3 + 1];
+		img[offset * 3 + 2] += img[frame * i + offset * 3 + 2];
+	}
+	//img[offset * 3 + 0] /= spp;
+	//img[offset * 3 + 1] /= spp;
+	//img[offset * 3 + 2] /= spp;
+}
+//分配内存
+__global__ void AllocateOnDevice(sphere* sph,hitable_list* hit_list, camera* cam)
+{
+	sph[0] = sphere(vec3(0, 0, -1), 0.5);
+	sph[1] = sphere(vec3(0, -100.5, -1), 100);
+	*hit_list = hitable_list(sph, 2);
 	*cam = camera();
 }
 // 释放内存
-__global__ void DeleteOnDevice(sphere **h, hitable_list *hit_list, camera *cam)
+__global__ void DeleteOnDevice( hitable_list *hit_list, camera *cam)
 {
-	delete[](*h);
-	delete hit_list;
+	sphere* s = hit_list->list;
+	delete s;
+	hit_list->list = nullptr;
+	//delete hit_list;
 	delete cam;
 }
 #pragma endregion
@@ -284,31 +302,43 @@ int main(void)
 	cudaCheck(cudaEventCreate(&start));
 	cudaCheck(cudaEventCreate(&stop));
 	cudaCheck(cudaEventRecord(start, 0));
-	CPUBitmap bitmap(DIMX, DIMY);
 
+	CPUBitmap bitmap(DIMX, DIMY);
 	unsigned char *dev_bitmap;
 	// 在GPU上分配内存以计算输出位图
-	cudaCheck(cudaMalloc(&dev_bitmap, bitmap.image_size()));
+	cudaCheck(cudaMalloc(&dev_bitmap, bitmap.image_size()*SPP));
 
-	dim3 grids(DIMX / 16, DIMY / 16);
-	dim3 threads(16, 16);
-	sphere **h_ptr = nullptr;
 	hitable_list *dev_hitlist = nullptr;
 	camera *dev_cam = nullptr;
-	unsigned int spp = SPP;
-	cudaCheck(cudaMalloc((void **)&h_ptr, sizeof(sphere **)));
+	sphere *dev_sphere = nullptr;
 	cudaCheck(cudaMalloc(&dev_hitlist, sizeof(hitable_list)));
 	cudaCheck(cudaMalloc(&dev_cam, sizeof(camera)));
+	cudaCheck(cudaMalloc(&dev_sphere,2 * sizeof(sphere)));
+	cudaMemcpy()
 
-	AllocateOnDevice <<<1,1>>> (h_ptr, dev_hitlist, dev_cam);
-	kernel <<<grids, threads >>>(dev_bitmap, dev_hitlist, dev_cam,spp);
+	printf("Starting AllocateOnDevice\n");
+	AllocateOnDevice <<<1,1>>> (dev_sphere, dev_hitlist, dev_cam);
+
+
+	dim3 grids3d(DIMX / 16, DIMY / 16, SPP / 16);
+	dim3 blocks3d(16, 16, 16);
+	printf("Starting kernel\n");
+	kernel <<<grids3d, blocks3d >>>(dev_bitmap, dev_hitlist, dev_cam);
+
+
 	cudaCheck(cudaDeviceSynchronize());
-	cudaCheck(cudaGetLastError());
+	//cudaCheck(cudaGetLastError());
+	dim3 grids2d(DIMX / 16, DIMY / 16);
+	dim3 blocks2d(16, 16);
+	printf("Starting mix\n");
+	mix << < grids2d, blocks2d >> > (dev_bitmap, SPP);
 
-	DeleteOnDevice << <1, 1 >> >(h_ptr, dev_hitlist, dev_cam);
+	printf("Starting DeleteOnDevice\n");
+	DeleteOnDevice << <1, 1 >> >(dev_hitlist, dev_cam);
 
 	// 将位图从GPU上复制到主机上
-	cudaCheck(cudaMemcpy(bitmap.get_ptr(), dev_bitmap, bitmap.image_size(), cudaMemcpyDeviceToHost));
+	cudaCheck(cudaMemcpy(bitmap.get_ptr(), dev_bitmap
+		, bitmap.image_size(), cudaMemcpyDeviceToHost));
 
 	// 记录结束时间
 	cudaCheck(cudaEventRecord(stop, 0));
@@ -317,11 +347,14 @@ int main(void)
 	float elapsedTime;
 	cudaCheck(cudaEventElapsedTime(&elapsedTime, start, stop)); // 计算两个事件之间的时间
 	printf("Time to generate:  %3.1f ms\n", elapsedTime);
+
 	// 销毁事件
 	cudaCheck(cudaEventDestroy(start));
 	cudaCheck(cudaEventDestroy(stop));
+
 	// 释放内存
 	cudaCheck(cudaFree(dev_bitmap));
+
 	// 显示位图
 	bitmap.savetobmp("output/output.bmp");
 	system("output\\output.bmp");
